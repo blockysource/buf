@@ -80,12 +80,12 @@ func goPackage(
 						logger.Sugar().Debugf("overriding package depth for %q to %d", pkgName, depth)
 						seenPackagesOverrides[pkgName] = struct{}{}
 					}
-
 				}
 
 				goPackageValue := GoPackageImportPathForFile(imageFile, importPathPrefix, depth)
 				if overrideValue, ok := overrides[imageFile.Path()]; ok {
 					goPackageValue = overrideValue
+					logger.Sugar().Debugf("overriding go_package for %q to %q", imageFile.Path(), goPackageValue)
 					seenOverrideFiles[imageFile.Path()] = struct{}{}
 				}
 				if err := goPackageForFile(
