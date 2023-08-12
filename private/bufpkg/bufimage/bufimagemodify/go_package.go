@@ -71,7 +71,7 @@ func goPackage(
 				pkgName := imageFile.FileDescriptor().GetPackage()
 
 				logger.Sugar().Debugf("pkgName: %q", pkgName)
-				depth := uint(2)
+				var depth uint
 				if pkgName != "" && len(packageDepthOverrides) > 0 {
 					var ok bool
 					pkgDepth, ok := packageDepthOverrides[pkgName]

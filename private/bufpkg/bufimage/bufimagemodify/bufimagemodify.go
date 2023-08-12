@@ -217,8 +217,11 @@ func OptimizeFor(
 func GoPackageImportPathForFile(imageFile bufimage.ImageFile, importPathPrefix string, parts uint) string {
 	goPackageImportPath := path.Join(importPathPrefix, path.Dir(imageFile.Path()))
 	packageName := imageFile.FileDescriptor().GetPackage()
-	if _, ok := protoversion.NewPackageVersionForPackage(packageName); ok {
+	if _, ok := protoversion.NewPackageVersionForPackage(packageName); ok || parts != 0 {
 		pkgParts := strings.Split(packageName, ".")
+		if parts == 0 {
+			parts = 2
+		}
 		if len(pkgParts) >= int(parts) {
 			goPackageImportPath += ";"
 			for i := len(pkgParts) - int(parts); i < len(pkgParts); i++ {
