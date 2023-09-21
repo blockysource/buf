@@ -18,8 +18,8 @@ import (
 	"context"
 	"errors"
 	"testing"
-	"time"
 
+	"connectrpc.com/connect"
 	"github.com/bufbuild/buf/private/bufpkg/bufmanifest"
 	"github.com/bufbuild/buf/private/bufpkg/bufmodule/bufmoduleref"
 	"github.com/bufbuild/buf/private/gen/proto/connect/buf/alpha/registry/v1alpha1/registryv1alpha1connect"
@@ -27,7 +27,6 @@ import (
 	registryv1alpha1 "github.com/bufbuild/buf/private/gen/proto/go/buf/alpha/registry/v1alpha1"
 	"github.com/bufbuild/buf/private/pkg/manifest"
 	"github.com/bufbuild/buf/private/pkg/storage/storagemem"
-	"github.com/bufbuild/connect-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -124,10 +123,8 @@ func testDownload(
 			"remote",
 			"owner",
 			"repository",
-			"branch",
 			"commit",
 			"digest",
-			time.Now(),
 		)
 		require.NoError(t, err)
 		module, err := moduleReader.GetModule(ctx, pin)

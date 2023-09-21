@@ -24,6 +24,8 @@ import (
 	"os"
 	"strings"
 
+	"connectrpc.com/connect"
+	otelconnect "connectrpc.com/otelconnect"
 	"github.com/bufbuild/buf/private/buf/bufapp"
 	"github.com/bufbuild/buf/private/buf/buffetch"
 	"github.com/bufbuild/buf/private/buf/bufwire"
@@ -56,8 +58,6 @@ import (
 	"github.com/bufbuild/buf/private/pkg/storage/storageos"
 	"github.com/bufbuild/buf/private/pkg/stringutil"
 	"github.com/bufbuild/buf/private/pkg/transport/http/httpclient"
-	"github.com/bufbuild/connect-go"
-	otelconnect "github.com/bufbuild/connect-opentelemetry-go"
 	"github.com/spf13/pflag"
 	"go.uber.org/zap"
 	"golang.org/x/term"
@@ -65,7 +65,7 @@ import (
 
 const (
 	// Version is the CLI version of buf.
-	Version = "1.25.2-dev"
+	Version = "1.26.2-dev"
 
 	inputHTTPSUsernameEnvKey      = "BUF_INPUT_HTTPS_USERNAME"
 	inputHTTPSPasswordEnvKey      = "BUF_INPUT_HTTPS_PASSWORD"
@@ -890,11 +890,11 @@ func PackageVersionLongDescription(registryName, commandName, examplePlugin stri
 Examples:
 
 Get the version of the eliza module and the %s plugin for use with %s.
-    $ buf alpha package %s --module=buf.build/bufbuild/eliza --plugin=%s
+    $ buf alpha package %s --module=buf.build/connectrpc/eliza --plugin=%s
         v1.7.0-20230609151053-e682db0d9918.1
 
 Use a specific module version and plugin version.
-    $ buf alpha package %s --module=buf.build/bufbuild/eliza:e682db0d99184be88b41c4405ea8a417 --plugin=%s:v1.0.0
+    $ buf alpha package %s --module=buf.build/connectrpc/eliza:233fca715f49425581ec0a1b660be886 --plugin=%s:v1.0.0
         v1.0.0-20230609151053-e682db0d9918.1
 `, registryName, registryName, examplePlugin, registryName, commandName, examplePlugin, commandName, examplePlugin)
 }

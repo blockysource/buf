@@ -30,6 +30,7 @@ import (
 	"sync"
 	"testing"
 
+	"connectrpc.com/connect"
 	"github.com/bufbuild/buf/private/buf/cmd/buf/internal/internaltesting"
 	"github.com/bufbuild/buf/private/bufpkg/bufmanifest"
 	"github.com/bufbuild/buf/private/gen/proto/connect/buf/alpha/registry/v1alpha1/registryv1alpha1connect"
@@ -40,7 +41,6 @@ import (
 	"github.com/bufbuild/buf/private/pkg/app/appflag"
 	"github.com/bufbuild/buf/private/pkg/manifest"
 	"github.com/bufbuild/buf/private/pkg/storage/storagemem"
-	"github.com/bufbuild/connect-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -334,6 +334,10 @@ func (m *mockRepositoryService) UpdateRepositorySettingsByName(_ context.Context
 }
 
 func (m *mockRepositoryService) GetRepositoriesMetadata(_ context.Context, _ *connect.Request[registryv1alpha1.GetRepositoriesMetadataRequest]) (*connect.Response[registryv1alpha1.GetRepositoriesMetadataResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("unimplemented"))
+}
+
+func (m *mockRepositoryService) GetRepositoryDependencyDOTString(_ context.Context, _ *connect.Request[registryv1alpha1.GetRepositoryDependencyDOTStringRequest]) (*connect.Response[registryv1alpha1.GetRepositoryDependencyDOTStringResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("unimplemented"))
 }
 

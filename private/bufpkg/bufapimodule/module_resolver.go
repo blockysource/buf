@@ -18,10 +18,10 @@ import (
 	"context"
 	"errors"
 
+	"connectrpc.com/connect"
 	"github.com/bufbuild/buf/private/bufpkg/bufmodule/bufmoduleref"
 	registryv1alpha1 "github.com/bufbuild/buf/private/gen/proto/go/buf/alpha/registry/v1alpha1"
 	"github.com/bufbuild/buf/private/pkg/storage"
-	"github.com/bufbuild/connect-go"
 	"go.uber.org/zap"
 )
 
@@ -64,9 +64,7 @@ func (m *moduleResolver) GetModulePin(ctx context.Context, moduleReference bufmo
 		moduleReference.Remote(),
 		moduleReference.Owner(),
 		moduleReference.Repository(),
-		"", // branch
 		resp.Msg.RepositoryCommit.Name,
 		resp.Msg.RepositoryCommit.ManifestDigest,
-		resp.Msg.RepositoryCommit.CreateTime.AsTime(),
 	)
 }

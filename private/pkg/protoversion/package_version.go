@@ -29,7 +29,7 @@ type packageVersion struct {
 	suffix         string
 }
 
-func newPackageVersionForPackage(pkg string) (*packageVersion, bool) {
+func newPackageVersionForPackage(pkg string, options ...PackageVersionOption) (*packageVersion, bool) {
 	if pkg == "" {
 		return nil, false
 	}
@@ -37,19 +37,34 @@ func newPackageVersionForPackage(pkg string) (*packageVersion, bool) {
 	if len(parts) < 2 {
 		return nil, false
 	}
-	lastPart := parts[len(parts)-1]
-	// must at least contain 'v' and a number
-	if len(lastPart) < 2 {
+	return newPackageVersionForComponent(parts[len(parts)-1], options...)
+}
+
+func newPackageVersionForComponent(component string, options ...PackageVersionOption) (*packageVersion, bool) {
+	packageVersionOptions := newPackageVersionOptions()
+	for _, option := range options {
+		option(packageVersionOptions)
+	}
+	minMajorVersionNumber := 1
+	if packageVersionOptions.allowV0 {
+		minMajorVersionNumber = 0
+	}
+
+	if strings.Contains(component, ".") {
 		return nil, false
 	}
-	if lastPart[0] != 'v' {
+	// must at least contain 'v' and a number
+	if len(component) < 2 {
+		return nil, false
+	}
+	if component[0] != 'v' {
 		return nil, false
 	}
 
 	// v1beta1 -> 1beta1
 	// v1testfoo -> 1testfoo
 	// v1p1alpha1 -> p1alpha1
-	version := lastPart[1:]
+	version := component[1:]
 
 	if strings.Contains(version, "test") {
 		// 1testfoo -> [1, foo]
@@ -57,7 +72,7 @@ func newPackageVersionForPackage(pkg string) (*packageVersion, bool) {
 		if len(split) != 2 {
 			return nil, false
 		}
-		major, ok := positiveNumber(split[0])
+		major, ok := getNumber(split[0], minMajorVersionNumber)
 		if !ok {
 			return nil, false
 		}
@@ -88,12 +103,12 @@ func newPackageVersionForPackage(pkg string) (*packageVersion, bool) {
 		minor := 0
 		var ok bool
 		if split[1] != "" {
-			minor, ok = positiveNumber(split[1])
+			minor, ok = getNumber(split[1], 1)
 			if !ok {
 				return nil, false
 			}
 		}
-		major, patch, ok := getAlphaBetaMajorPatch(split[0])
+		major, patch, ok := getAlphaBetaMajorPatch(split[0], minMajorVersionNumber)
 		if !ok {
 			return nil, false
 		}
@@ -101,7 +116,7 @@ func newPackageVersionForPackage(pkg string) (*packageVersion, bool) {
 	}
 
 	// no suffix that is valid, make sure we just have a number
-	major, ok := positiveNumber(version)
+	major, ok := getNumber(version, minMajorVersionNumber)
 	if !ok {
 		return nil, false
 	}
@@ -164,32 +179,32 @@ func (p *packageVersion) String() string {
 
 func (p *packageVersion) isPackageVersion() {}
 
-func getAlphaBetaMajorPatch(remainder string) (int, int, bool) {
+func getAlphaBetaMajorPatch(remainder string, minMajorVersionNumber int) (int, int, bool) {
 	if strings.Contains(remainder, "p") {
 		// 1p1 -> [1, 1]
 		patchSplit := strings.SplitN(remainder, "p", 2)
 		if len(patchSplit) != 2 {
 			return 0, 0, false
 		}
-		major, ok := positiveNumber(patchSplit[0])
+		major, ok := getNumber(patchSplit[0], minMajorVersionNumber)
 		if !ok {
 			return 0, 0, false
 		}
-		patch, ok := positiveNumber(patchSplit[1])
+		patch, ok := getNumber(patchSplit[1], 1)
 		if !ok {
 			return 0, 0, false
 		}
 		return major, patch, true
 	}
 	// no patch, make sure just a number
-	major, ok := positiveNumber(remainder)
+	major, ok := getNumber(remainder, minMajorVersionNumber)
 	if !ok {
 		return 0, 0, false
 	}
 	return major, 0, true
 }
 
-func positiveNumber(s string) (int, bool) {
+func getNumber(s string, min int) (int, bool) {
 	if s == "" {
 		return 0, false
 	}
@@ -197,8 +212,16 @@ func positiveNumber(s string) (int, bool) {
 	if err != nil {
 		return 0, false
 	}
-	if value < 1 {
+	if value < int64(min) {
 		return 0, false
 	}
 	return int(value), true
+}
+
+type packageVersionOptions struct {
+	allowV0 bool
+}
+
+func newPackageVersionOptions() *packageVersionOptions {
+	return &packageVersionOptions{}
 }

@@ -18,13 +18,12 @@ import (
 	"bytes"
 	"context"
 	"testing"
-	"time"
 
+	"connectrpc.com/connect"
 	"github.com/bufbuild/buf/private/bufpkg/bufmodule/bufmoduleref"
 	"github.com/bufbuild/buf/private/gen/proto/connect/buf/alpha/registry/v1alpha1/registryv1alpha1connect"
 	registryv1alpha1 "github.com/bufbuild/buf/private/gen/proto/go/buf/alpha/registry/v1alpha1"
 	"github.com/bufbuild/buf/private/pkg/manifest"
-	"github.com/bufbuild/connect-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -103,14 +102,8 @@ func testGetModulePin(
 			assert.Equal(t, "remote", pin.Remote())
 			assert.Equal(t, "owner", pin.Owner())
 			assert.Equal(t, "repository", pin.Repository())
-			assert.Equal(t, "", pin.Branch())
 			assert.Equal(t, resp.RepositoryCommit.Name, pin.Commit())
 			assert.Equal(t, resp.RepositoryCommit.ManifestDigest, pin.Digest())
-			assert.Equal(
-				t,
-				time.Date(1970, time.January, 1, 0, 0, 0, 0, time.UTC),
-				pin.CreateTime(),
-			)
 		}
 	})
 }

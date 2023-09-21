@@ -22,6 +22,7 @@ import (
 
 	"github.com/bufbuild/buf/private/pkg/app"
 	"github.com/bufbuild/buf/private/pkg/command"
+	"github.com/bufbuild/buf/private/pkg/normalpath"
 	"github.com/bufbuild/buf/private/pkg/storage"
 	"github.com/bufbuild/buf/private/pkg/storage/storageos"
 	"go.uber.org/zap"
@@ -266,38 +267,94 @@ type TreeNode interface {
 
 // Repository is a git repository that is backed by a `.git` directory.
 type Repository interface {
-	// DefaultBranch is the default branch of the repository. This is either configured via the
-	// `OpenRepositoryWithDefaultBranch` option, or discovered from the value in
-	// `.git/refs/remotes/origin/HEAD`. Therefore, discovery requires that the repository is pushed to
-	// a remote named `origin`.
+	// DefaultBranch is the default branch of the repository. By default this reads the value in
+	// `.git/refs/remotes/origin/HEAD` (assuming the default branch has been already pushed to a
+	// remote named `origin`). It can be customized via the `OpenRepositoryWithDefaultBranch` option.
 	DefaultBranch() string
 	// CurrentBranch is the current checked out branch.
 	CurrentBranch() string
 	// ForEachBranch ranges over branches in the repository in an undefined order.
+	ForEachBranch(f func(branch string, headHash Hash) error, options ...ForEachBranchOption) error
+	// ForEachCommit ranges over commits in reverse topological order, going backwards in time always
+	// choosing the first parent, until no more parents are found (presumably the first commit of the
+	// git repository).
 	//
-	// Only branches pushed to a remote named "origin" are visited.
-	ForEachBranch(func(branch string, headHash Hash) error) error
-	// ForEachCommit ranges over commits for the target branch in topological order.
-	//
-	// The range starts at the HEAD commit for the branch in the `origin` remote, and goes backwards
-	// in time always choosing the first parent, until no more parents are found (presumably the first
-	// commit of the git repository).
+	// The range starts by default at the HEAD commit for the default branch. You can customize this
+	// starting point by passing options.
 	//
 	// If an error is seen, the loop is stopped and the error is returned.
-	ForEachCommit(branch string, f func(commit Commit) error) error
-	// HEADCommit returns the HEAD commit at the passed branch if it's present in the `origin` remote.
-	HEADCommit(branch string) (Commit, error)
+	ForEachCommit(f func(commit Commit) error, options ...ForEachCommitOption) error
+	// HEADCommit returns by default the HEAD commit at the default branch. You can customize this by
+	// passing options.
+	HEADCommit(options ...HEADCommitOption) (Commit, error)
 	// ForEachTag ranges over tags in the repository in an undefined order.
-	//
-	// All tags are ranged, including local (unpushed) tags.
-	//
-	// TODO: only loop over remote tags, or inform the callback if the tag is local/remote.
 	ForEachTag(func(tag string, commitHash Hash) error) error
-	// Objects exposes the underlying object reader to read objects directly from the
-	// `.git` directory.
+	// Objects exposes the underlying object reader to read objects directly from the `.git`
+	// directory.
 	Objects() ObjectReader
 	// Close closes the repository.
 	Close() error
+}
+
+// ForEachBranchOption are options that can be passed to ForEachBranch.
+type ForEachBranchOption func(*forEachBranchOpts)
+
+// ForEachBranchWithRemote sets the function to only loop over branches present in the passed
+// remote at their respective HEADs.
+func ForEachBranchWithRemote(remoteName string) ForEachBranchOption {
+	return func(opts *forEachBranchOpts) {
+		opts.remote = remoteName
+	}
+}
+
+// HEADCommitOption are options that can be passed to HEADCommit.
+type HEADCommitOption func(*headCommitOpts)
+
+// HEADCommitWithBranch sets the function to return the HEAD commit for a specific branch instead of
+// the default branch.
+func HEADCommitWithBranch(branchName string) HEADCommitOption {
+	return func(opts *headCommitOpts) {
+		opts.branch = branchName
+	}
+}
+
+// HEADCommitWithRemote sets the function to return the HEAD commit for the branch that is present
+// in the passed remote.
+func HEADCommitWithRemote(remoteName string) HEADCommitOption {
+	return func(opts *headCommitOpts) {
+		opts.remote = remoteName
+	}
+}
+
+// ForEachCommitOption are options that can be passed to ForEachCommit.
+type ForEachCommitOption func(*forEachCommitOpts)
+
+// ForEachCommitWithBranchStartPoint sets a branch as a starting point to start the loop.
+func ForEachCommitWithBranchStartPoint(branchName string, options ...ForEachCommitWithBranchStartPointOption) ForEachCommitOption {
+	return func(opts *forEachCommitOpts) {
+		var config forEachCommitWithBranchStartPointOpts
+		for _, option := range options {
+			option(&config)
+		}
+		opts.start = &branchReference{name: branchName, remote: config.remote}
+	}
+}
+
+type ForEachCommitWithBranchStartPointOption func(*forEachCommitWithBranchStartPointOpts)
+
+// ForEachCommitWithBranchStartPointWithRemote uses the remote position for the branch, instead of
+// the local position.
+func ForEachCommitWithBranchStartPointWithRemote(remoteName string) ForEachCommitWithBranchStartPointOption {
+	return func(opts *forEachCommitWithBranchStartPointOpts) {
+		opts.remote = remoteName
+	}
+}
+
+// ForEachCommitWithHashStartPoint sets a git hash as a starting point to start the loop.
+func ForEachCommitWithHashStartPoint(hash string) ForEachCommitOption {
+	return func(opts *forEachCommitOpts) {
+		opts.start = &hashReference{name: hash}
+	}
 }
 
 // OpenRepository opens a new Repository from a `.git` directory. The provided path to the `.git`
@@ -307,8 +364,8 @@ type Repository interface {
 // caller must close the repository to clean up resources.
 //
 // By default, OpenRepository will attempt to detect the default branch if the repository has been
-// pushed. This may fail if the repository is not pushed. In this case, use the
-// `OpenRepositoryWithDefaultBranch` option.
+// pushed to a remote named `origin`. This may fail if the repository is not pushed, in this case,
+// use the `OpenRepositoryWithDefaultBranch` option.
 func OpenRepository(ctx context.Context, gitDirPath string, runner command.Runner, options ...OpenRepositoryOption) (Repository, error) {
 	return openGitRepository(ctx, gitDirPath, runner, options...)
 }
@@ -325,4 +382,47 @@ func OpenRepositoryWithDefaultBranch(name string) OpenRepositoryOption {
 		r.defaultBranch = name
 		return nil
 	}
+}
+
+type forEachBranchOpts struct {
+	remote string
+}
+
+type headCommitOpts struct {
+	branch string
+	remote string
+}
+
+type forEachCommitWithBranchStartPointOpts struct {
+	remote string
+}
+
+// reference is a single git reference used in ForEachCommit to declare an starting commit.
+type reference interface {
+	refType() string
+	refName() string
+}
+
+type hashReference struct {
+	name string
+}
+
+func (r *hashReference) refType() string { return "hash" }
+func (r *hashReference) refName() string { return r.name }
+
+type branchReference struct {
+	name   string
+	remote string
+}
+
+func (r *branchReference) refType() string { return "branch" }
+func (r *branchReference) refName() string {
+	if r.remote != "" {
+		return normalpath.Join(r.remote, r.name)
+	}
+	return r.name
+}
+
+type forEachCommitOpts struct {
+	start reference
 }

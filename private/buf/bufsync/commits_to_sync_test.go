@@ -16,33 +16,28 @@ package bufsync
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/bufbuild/buf/private/bufpkg/bufmodule/bufmoduleref"
+	"github.com/bufbuild/buf/private/pkg/command"
+	"github.com/bufbuild/buf/private/pkg/git"
+	"github.com/bufbuild/buf/private/pkg/storage/storagegit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/zap/zaptest"
 )
 
 func TestCommitsToSyncWithNoPreviousSyncPoints(t *testing.T) {
 	t.Parallel()
-	// share git repo, bsr checker and modules to sync for all the test scenarios, as a regular `buf
-	// sync` run would do.
-	mockBSRChecker := newMockSyncGitChecker()
-	someModule, err := bufmoduleref.NewModuleIdentity("buf.test", "owner", "repo")
+	moduleIdentityInHEAD, err := bufmoduleref.NewModuleIdentity("buf.build", "acme", "foo")
 	require.NoError(t, err)
-	moduleToSync, err := newSyncableModule(".", someModule)
+	moduleIdentityOverride, err := bufmoduleref.NewModuleIdentity("buf.build", "acme", "bar")
 	require.NoError(t, err)
-	// scaffoldGitRepository returns a repo with the following commits:
-	// | o-o----------o-----------------o (main)
-	// |   └o-o (foo) └o--------o (bar)
-	// |               └o (baz)
-	repo := scaffoldGitRepository(t)
-	s := syncer{
-		repo:                   repo,
-		modulesToSync:          []Module{moduleToSync},
-		syncedGitCommitChecker: mockBSRChecker.checkFunc(),
-	}
-
+	const defaultBranchName = "main"
+	repo, repoDir := scaffoldGitRepository(t, defaultBranchName)
+	prepareGitRepoSyncWithNoPreviousSyncPoints(t, repoDir, moduleIdentityInHEAD, defaultBranchName)
 	type testCase struct {
 		name            string
 		branch          string
@@ -52,7 +47,7 @@ func TestCommitsToSyncWithNoPreviousSyncPoints(t *testing.T) {
 		{
 			name:            "when_main",
 			branch:          "main",
-			expectedCommits: 4,
+			expectedCommits: 4, // doesn't include initial scaffolding empty commit
 		},
 		{
 			name:            "when_foo",
@@ -70,27 +65,72 @@ func TestCommitsToSyncWithNoPreviousSyncPoints(t *testing.T) {
 			expectedCommits: 1,
 		},
 	}
-	for _, tc := range testCases {
-		func(tc testCase) {
-			t.Run(tc.name, func(t *testing.T) {
-				syncableCommits, err := s.commitsToSync(
-					context.Background(),
-					tc.branch,
-					nil,
-				)
-				require.NoError(t, err)
-				require.Len(t, syncableCommits, tc.expectedCommits)
-				for _, syncableCommit := range syncableCommits {
-					assert.NotEmpty(t, syncableCommit.commit.Hash().Hex())
-					mockBSRChecker.markSynced(syncableCommit.commit.Hash().Hex())
-					assert.Equal(t, len(syncableCommit.modules), 1)
-					for module := range syncableCommit.modules {
-						assert.Equal(t, someModule.IdentityString(), module.RemoteIdentity().IdentityString())
+	for _, withOverride := range []bool{false, true} {
+		mockBSRChecker := newMockSyncGitChecker()
+		for _, tc := range testCases {
+			func(tc testCase) {
+				t.Run(fmt.Sprintf("%s/override_%t", tc.name, withOverride), func(t *testing.T) {
+					const moduleDir = "."
+					moduleDirsToIdentityOverride := make(map[string]bufmoduleref.ModuleIdentity)
+					if withOverride {
+						moduleDirsToIdentityOverride[moduleDir] = moduleIdentityOverride
+					} else {
+						moduleDirsToIdentityOverride[moduleDir] = nil
 					}
-				}
-			})
-		}(tc)
+					testSyncer := syncer{
+						repo:                                  repo,
+						storageGitProvider:                    storagegit.NewProvider(repo.Objects()),
+						logger:                                zaptest.NewLogger(t),
+						errorHandler:                          &mockErrorHandler{},
+						modulesDirsToIdentityOverrideForSync:  moduleDirsToIdentityOverride,
+						sortedModulesDirsForSync:              []string{"."},
+						syncAllBranches:                       true,
+						syncedGitCommitChecker:                mockBSRChecker.checkFunc(),
+						commitsToTags:                         make(map[string][]string),
+						modulesDirsToBranchesToIdentities:     make(map[string]map[string]bufmoduleref.ModuleIdentity),
+						modulesToBranchesExpectedSyncPoints:   make(map[string]map[string]string),
+						modulesIdentitiesToCommitsSyncedCache: make(map[string]map[string]struct{}),
+					}
+					require.NoError(t, testSyncer.prepareSync(context.Background()))
+					var moduleIdentity bufmoduleref.ModuleIdentity
+					if withOverride {
+						moduleIdentity = moduleIdentityOverride
+					} else {
+						moduleIdentity = moduleIdentityInHEAD
+					}
+					syncableCommits, err := testSyncer.branchSyncableCommits(
+						context.Background(),
+						moduleDir,
+						moduleIdentity,
+						tc.branch,
+						"", // no expected git sync point
+					)
+					require.NoError(t, err)
+					require.Len(t, syncableCommits, tc.expectedCommits)
+					for _, syncableCommit := range syncableCommits {
+						assert.NotEmpty(t, syncableCommit.commit.Hash().Hex())
+						mockBSRChecker.markSynced(syncableCommit.commit.Hash().Hex())
+						assert.NotNil(t, syncableCommit.module)
+						// no need to assert syncableCommit.module.ModuleIdentity, it's not renamed because it's
+						// not used when syncing.
+					}
+				})
+			}(tc)
+		}
 	}
+}
+
+type mockErrorHandler struct{}
+
+func (*mockErrorHandler) HandleReadModuleError(readErr *ReadModuleError) LookbackDecisionCode {
+	if readErr.code == ReadModuleErrorCodeUnexpectedName {
+		return LookbackDecisionCodeOverride
+	}
+	return LookbackDecisionCodeSkip
+}
+
+func (*mockErrorHandler) InvalidBSRSyncPoint(bufmoduleref.ModuleIdentity, string, git.Hash, bool, error) error {
+	return errors.New("unimplemented")
 }
 
 type mockSyncedGitChecker struct {
@@ -119,4 +159,48 @@ func (c *mockSyncedGitChecker) checkFunc() SyncedGitCommitChecker {
 		}
 		return syncedHashes, nil
 	}
+}
+
+// prepareGitRepoSyncWithNoPreviousSyncPoints writes and pushes commits in the repo with the
+// following commits:
+//
+// | o-o----------o-----------------o (master)
+// |   └o-o (foo) └o--------o (bar)
+// |               └o (baz)
+func prepareGitRepoSyncWithNoPreviousSyncPoints(t *testing.T, repoDir string, moduleIdentity bufmoduleref.ModuleIdentity, defaultBranchName string) {
+	runner := command.NewRunner()
+	var allBranches = []string{defaultBranchName, "foo", "bar", "baz"}
+
+	var commitsCounter int
+	doEmptyCommit := func(numOfCommits int) {
+		for i := 0; i < numOfCommits; i++ {
+			commitsCounter++
+			runInDir(
+				t, runner, repoDir,
+				"git", "commit", "--allow-empty",
+				"-m", fmt.Sprintf("commit %d", commitsCounter),
+			)
+		}
+	}
+
+	// write the base module in the root
+	writeFiles(t, repoDir, map[string]string{
+		"buf.yaml": fmt.Sprintf("version: v1\nname: %s\n", moduleIdentity.IdentityString()),
+	})
+	runInDir(t, runner, repoDir, "git", "add", ".")
+	runInDir(t, runner, repoDir, "git", "commit", "-m", "commit 0")
+
+	doEmptyCommit(1)
+	runInDir(t, runner, repoDir, "git", "checkout", "-b", allBranches[1])
+	doEmptyCommit(2)
+	runInDir(t, runner, repoDir, "git", "checkout", defaultBranchName)
+	doEmptyCommit(1)
+	runInDir(t, runner, repoDir, "git", "checkout", "-b", allBranches[2])
+	doEmptyCommit(1)
+	runInDir(t, runner, repoDir, "git", "checkout", "-b", allBranches[3])
+	doEmptyCommit(1)
+	runInDir(t, runner, repoDir, "git", "checkout", allBranches[2])
+	doEmptyCommit(1)
+	runInDir(t, runner, repoDir, "git", "checkout", defaultBranchName)
+	doEmptyCommit(1)
 }

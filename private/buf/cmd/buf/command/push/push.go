@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 
+	"connectrpc.com/connect"
 	"github.com/bufbuild/buf/private/buf/bufcli"
 	"github.com/bufbuild/buf/private/bufpkg/bufanalysis"
 	"github.com/bufbuild/buf/private/bufpkg/bufmanifest"
@@ -32,7 +33,6 @@ import (
 	"github.com/bufbuild/buf/private/pkg/connectclient"
 	"github.com/bufbuild/buf/private/pkg/manifest"
 	"github.com/bufbuild/buf/private/pkg/stringutil"
-	"github.com/bufbuild/connect-go"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 )
@@ -193,7 +193,7 @@ func run(
 	if err != nil {
 		if connect.CodeOf(err) == connect.CodeAlreadyExists {
 			if _, err := container.Stderr().Write(
-				[]byte("The latest commit has the same content; not creating a new commit.\n"),
+				[]byte(fmt.Sprintf("%s\n", err.Error())),
 			); err != nil {
 				return err
 			}

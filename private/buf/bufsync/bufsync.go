@@ -21,78 +21,139 @@ import (
 
 	"github.com/bufbuild/buf/private/bufpkg/bufmodule/bufmoduleref"
 	"github.com/bufbuild/buf/private/pkg/git"
+	"github.com/bufbuild/buf/private/pkg/normalpath"
 	"github.com/bufbuild/buf/private/pkg/storage"
 	"github.com/bufbuild/buf/private/pkg/storage/storagegit"
 	"go.uber.org/zap"
 )
 
-// ErrModuleDoesNotExist is an error returned when looking for a remote module.
+// ErrModuleDoesNotExist is an error returned when looking for a BSR module.
 var ErrModuleDoesNotExist = errors.New("BSR module does not exist")
 
-// ErrorHandler handles errors reported by the Syncer. If a non-nil
-// error is returned by the handler, sync will abort in a partially-synced
-// state.
+const (
+	// ReadModuleErrorCodeModuleNotFound happens when the passed module directory does not have any
+	// module.
+	ReadModuleErrorCodeModuleNotFound = iota + 1
+	// ReadModuleErrorCodeUnnamedModule happens when the read module does not have a name.
+	ReadModuleErrorCodeUnnamedModule
+	// ReadModuleErrorCodeInvalidModuleConfig happens when the module directory has an invalid module
+	// configuration.
+	ReadModuleErrorCodeInvalidModuleConfig
+	// ReadModuleErrorCodeBuildModule happens when the read module errors building.
+	ReadModuleErrorCodeBuildModule
+	// ReadModuleErrorCodeUnexpectedName happens when the read module has a different name than
+	// expected, usually the one in the branch HEAD commit.
+	ReadModuleErrorCodeUnexpectedName
+)
+
+// ReadModuleErrorCode is the type of errors that can be thrown by the syncer when reading a module
+// from a passed module directory.
+type ReadModuleErrorCode int
+
+// ReadModuleError is an error that happens when trying to read a module from a module directory in
+// a git commit.
+type ReadModuleError struct {
+	err       error
+	code      ReadModuleErrorCode
+	branch    string
+	commit    string
+	moduleDir string
+}
+
+// Code returns the error code for this read module error.
+func (e *ReadModuleError) Code() ReadModuleErrorCode {
+	return e.code
+}
+
+// Code returns the module directory in which this error code was thrown.
+func (e *ReadModuleError) ModuleDir() string {
+	return e.moduleDir
+}
+
+func (e *ReadModuleError) Error() string {
+	return fmt.Sprintf(
+		"read module in branch %s, commit %s, directory %s: %s",
+		e.branch, e.commit, e.moduleDir, e.err.Error(),
+	)
+}
+
+const (
+	// LookbackDecisionCodeSkip instructs the syncer to skip the commit that threw the read module
+	// error, and keep looking back.
+	LookbackDecisionCodeSkip = iota + 1
+	// LookbackDecisionCodeOverride instructs the syncer to use the read module and override its
+	// identity with the target module identity for that directory, read either from the branch's HEAD
+	// commit, or the passed module identity override in the command.
+	LookbackDecisionCodeOverride
+	// LookbackDecisionCodeStop instructs the syncer to stop looking back when finding the read module
+	// error, and use the previous commit (if any) as the start sync point.
+	LookbackDecisionCodeStop
+	// LookbackDecisionCodeFail instructs the syncer to fail the lookback process for the branch,
+	// effectively failing the sync process.
+	LookbackDecisionCodeFail
+)
+
+// LookbackDecisionCode is the decision made by the ErrorHandler when finding a commit that throws
+// an error reading a module.
+type LookbackDecisionCode int
+
+// ErrorHandler handles errors reported by the Syncer before or during the sync process.
 type ErrorHandler interface {
-	// InvalidModuleConfig is invoked by Syncer upon encountering a module
-	// with an invalid module config.
+	// HandleReadModuleError is invoked when navigating a branch from HEAD and seeing an error reading
+	// a module.
+	//
+	// For each branch to be synced, the Syncer travels back from HEAD looking for modules in the
+	// given module directories, until finding a commit that is already synced to the BSR, or the
+	// beginning of the Git repository.
+	//
+	// The syncer might find errors trying to read a module in that directory. Those errors are sent
+	// to this function to know what to do on those commits.
+	//
+	// decide if the Syncer should stop looking back or not, and choose the previous one (if any) as
+	// the start sync point.
+	//
+	// e.g.: The git commits in topological order are: `a -> ... -> z (HEAD)`, and the modules on a
+	// given module directory are:
+	//
+	// commit | module name or failure | could be synced? | why?
+	// ----------------------------------------------------------------------------------------
+	// z      | buf.build/acme/foo     | Y                | HEAD
+	// y      | buf.build/acme/foo     | Y                | same as HEAD
+	// x      | buf.build/acme/bar     | N                | different than HEAD
+	// w      | unnamed module         | N                | no module name
+	// v      | unbuildable module     | N                | module does not build
+	// u      | module not found       | N                | no module name, no 'buf.yaml' file
+	// t      | buf.build/acme/foo     | Y                | same as HEAD
+	// s      | buf.build/acme/foo     | Y                | same as HEAD
+	// r      | buf.build/acme/foo     | N                | already synced to the BSR
+	//
+	// If this func returns `LookbackDecisionCodeSkip` for any `ReadModuleErrorCode`, then the syncer
+	// will stop looking when reaching the commit `r` because it already exists in the BSR, select `s`
+	// as the start sync point, and the synced commits into the BSR will be [s, t, x, y, z].
+	//
+	// If this func returns `LookbackDecisionCodeStop` for `ReadModuleErrorCodeModuleNotFound`, the
+	// syncer will stop looking when reaching the commit `u`, will select `v` as the start sync point,
+	// and the synced commits into the BSR will be [x, y, z].
+	HandleReadModuleError(err *ReadModuleError) LookbackDecisionCode
+	// InvalidBSRSyncPoint is invoked by Syncer upon encountering a module's branch sync point that is
+	// invalid locally. A typical example is either a sync point that points to a commit that cannot
+	// be found anymore, or the commit itself has been corrupted.
 	//
 	// Returning an error will abort sync.
-	InvalidModuleConfig(
-		module Module,
-		commit git.Commit,
-		err error,
-	) error
-	// BuildFailure is invoked by Syncer upon encountering a module that fails
-	// build.
-	//
-	// Returning an error will abort sync.
-	BuildFailure(
-		module Module,
-		commit git.Commit,
-		err error,
-	) error
-	// InvalidSyncPoint is invoked by Syncer upon encountering a module's branch
-	// sync point that is invalid. A typical example is either a sync point that
-	// point to a commit that cannot be found anymore, or the commit itself has
-	// been corrupted.
-	//
-	// Returning an error will abort sync.
-	InvalidSyncPoint(
-		module Module,
+	InvalidBSRSyncPoint(
+		module bufmoduleref.ModuleIdentity,
 		branch string,
 		syncPoint git.Hash,
+		isGitDefaultBranch bool,
 		err error,
 	) error
-}
-
-// Module is a module that will be synced by Syncer.
-type Module interface {
-	// Dir is the path to the module relative to the repository root.
-	Dir() string
-	// RemoteIdentity is the identity of the remote module that the
-	// local module is synced to.
-	RemoteIdentity() bufmoduleref.ModuleIdentity
-	// String is the string representation of this module.
-	String() string
-}
-
-// NewModule constructs a new module that can be synced with a Syncer.
-func NewModule(dir string, identityOverride bufmoduleref.ModuleIdentity) (Module, error) {
-	return newSyncableModule(
-		dir,
-		identityOverride,
-	)
 }
 
 // Syncer syncs a modules in a git.Repository.
 type Syncer interface {
-	// Sync syncs the repository using the provided SyncFunc. It processes
-	// commits in reverse topological order, loads any configured named
-	// modules, extracts any Git metadata for that commit, and invokes
-	// SyncFunc with a ModuleCommit.
-	//
-	// Only commits/branches belonging to the remote named 'origin' are
-	// processed. All tags are processed.
+	// Sync syncs the repository using the provided SyncFunc. It processes commits in reverse
+	// topological order, loads any configured named modules, extracts any Git metadata for that
+	// commit, and invokes SyncFunc with a ModuleCommit.
 	Sync(context.Context, SyncFunc) error
 }
 
@@ -116,17 +177,33 @@ func NewSyncer(
 // SyncerOption configures the creation of a new Syncer.
 type SyncerOption func(*syncer) error
 
-// SyncerWithModule configures a Syncer to sync the specified module.
-//
-// This option can be provided multiple times to sync multiple distinct modules.
-func SyncerWithModule(module Module) SyncerOption {
+// SyncerWithRemote configures a Syncer with a resumption using a SyncPointResolver.
+func SyncerWithRemote(remoteName string) SyncerOption {
 	return func(s *syncer) error {
-		for _, existingModule := range s.modulesToSync {
-			if existingModule.String() == module.String() {
-				return fmt.Errorf("duplicate module %s", module)
-			}
+		s.remote = remoteName
+		return nil
+	}
+}
+
+// SyncerWithModule configures a Syncer to sync a module in the specified module directory, with an
+// optional module override.
+//
+// If a not-nil module identity is passed, it will be used as the expected module target for the
+// module directory. On the other hand, if a nil module identity is passed, then the module identity
+// target for that module directory is read from the HEAD commit on each git branch.
+//
+// This option can be provided multiple times to sync multiple distinct modules. The order in which
+// the module are passed is preserved, and those modules are synced in the same order. If the same
+// module directory is passed multiple times this option errors, since the order cannot be preserved
+// anymore.
+func SyncerWithModule(moduleDir string, identityOverride bufmoduleref.ModuleIdentity) SyncerOption {
+	return func(s *syncer) error {
+		moduleDir = normalpath.Normalize(moduleDir)
+		if _, alreadyAdded := s.modulesDirsToIdentityOverrideForSync[moduleDir]; alreadyAdded {
+			return fmt.Errorf("module directory %s already added", moduleDir)
 		}
-		s.modulesToSync = append(s.modulesToSync, module)
+		s.modulesDirsToIdentityOverrideForSync[moduleDir] = identityOverride
+		s.sortedModulesDirsForSync = append(s.sortedModulesDirsForSync, moduleDir)
 		return nil
 	}
 }
@@ -148,12 +225,22 @@ func SyncerWithGitCommitChecker(checker SyncedGitCommitChecker) SyncerOption {
 	}
 }
 
-// SyncerWithModuleDefaultBranchGetter configures a getter for modules' default branch, to contrast
-// a BSR repository default branch vs the local git repository branch. If left empty, the syncer
-// skips this validation step.
+// SyncerWithModuleDefaultBranchGetter configures a getter for modules' default branch, to protect
+// those branches syncs in cases like a Git history rewrite. If this option is not passed, the
+// syncer treats the BSR default branch as any other branch.
 func SyncerWithModuleDefaultBranchGetter(getter ModuleDefaultBranchGetter) SyncerOption {
 	return func(s *syncer) error {
 		s.moduleDefaultBranchGetter = getter
+		return nil
+	}
+}
+
+// SyncerWithTagsBackfiller configures a tags backfiller for older, already synced commits. If this
+// option is not passed, the syncer won't try to sync older tags past each module's start sync
+// points on all branches.
+func SyncerWithTagsBackfiller(backfiller TagsBackfiller) SyncerOption {
+	return func(s *syncer) error {
+		s.tagsBackfiller = backfiller
 		return nil
 	}
 }
@@ -162,7 +249,7 @@ func SyncerWithModuleDefaultBranchGetter(getter ModuleDefaultBranchGetter) Synce
 // commits in the current checked out branch.
 func SyncerWithAllBranches() SyncerOption {
 	return func(s *syncer) error {
-		s.allBranches = true
+		s.syncAllBranches = true
 		return nil
 	}
 }
@@ -189,24 +276,47 @@ type SyncedGitCommitChecker func(
 	commitHashes map[string]struct{},
 ) (map[string]struct{}, error)
 
-// ModuleDefaultBranchGetter is invoked before syncing, to make sure all modules that are about to
-// be synced have a BSR default branch that matches the local git repo. If the BSR remote module
-// does not exist, the implementation should return `ModuleDoesNotExistErr` error.
+// ModuleDefaultBranchGetter is invoked before syncing, to gather default branch names for all the
+// modules that are about to be synced. If the BSR module does not exist, the implementation should
+// return `ModuleDoesNotExistErr` error.
 type ModuleDefaultBranchGetter func(
 	ctx context.Context,
 	module bufmoduleref.ModuleIdentity,
 ) (string, error)
 
+// TagsBackfiller is invoked when a commit with valid modules is found within a lookback threshold
+// past the start sync point for such module. The Syncer assumes that the "old" commit is already
+// synced, so it will attempt to backfill existing tags using that git hash, in case they were
+// recently created or moved there.
+//
+// A common scenario is SemVer releases: a commit is pushed to the default Git branch, the sync
+// process triggers and completes, and some minutes later that commit is tagged "v1.2.3". The next
+// time the sync command runs, this backfiller would pick such tag and backfill it to the correct
+// BSR commit.
+//
+// It's expected to return the BSR commit name to which the tags were backfilled.
+type TagsBackfiller func(
+	ctx context.Context,
+	module bufmoduleref.ModuleIdentity,
+	alreadySyncedHash git.Hash,
+	author git.Ident,
+	committer git.Ident,
+	tags []string,
+) (string, error)
+
 // ModuleCommit is a module at a particular commit.
 type ModuleCommit interface {
-	// Identity is the identity of the module, accounting for any configured override.
+	// Branch is the git branch that this module is sourced from.
+	Branch() string
+	// Commit is the commit that the module is sourced from.
+	Commit() git.Commit
+	// Tags are the git tags associated with Commit.
+	Tags() []string
+	// Directory is the directory relative to the root of the git repository that this module is
+	// sourced from.
+	Directory() string
+	// Identity is the identity of the module.
 	Identity() bufmoduleref.ModuleIdentity
 	// Bucket is the bucket for the module.
 	Bucket() storage.ReadBucket
-	// Commit is the commit that the module is sourced from.
-	Commit() git.Commit
-	// Branch is the git branch that this module is sourced from.
-	Branch() string
-	// Tags are the git tags associated with Commit.
-	Tags() []string
 }

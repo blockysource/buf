@@ -27,20 +27,19 @@ jobs:
     steps:
       - name: Generate token
         id: generate_token
-        uses: tibdex/github-app-token@b62528385c34dbc9f38e5f4225ac829252d1ea92
+        uses: tibdex/github-app-token@0914d50df753bbc42180d982a6550f195390069f
         with:
           app_id: ${{env.APP_ID}}
           private_key: ${{ secrets.TOKEN_EXCHANGE_GH_APP_PRIVATE_KEY }}
-          repository: ${{ github.repository }}
           permissions: >-
             {"contents": "write", "pull_requests": "write"}
       - name: Checkout repository code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           token: ${{ steps.generate_token.outputs.token }}
       - uses: actions/setup-go@v4
         with:
-          go-version: "1.20.x"
+          go-version: "1.21.x"
       - name: Install Buf
         run: make installbuf
       - name: Update Buf Version
@@ -68,7 +67,7 @@ jobs:
     if: ${{ github.event_name == 'push' && startsWith(github.ref_name, 'release') }}
     steps:
       - name: Checkout repository code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
@@ -88,7 +87,7 @@ jobs:
     steps:
       - name: Generate token
         id: generate_token
-        uses: tibdex/github-app-token@b62528385c34dbc9f38e5f4225ac829252d1ea92
+        uses: tibdex/github-app-token@0914d50df753bbc42180d982a6550f195390069f
         with:
           app_id: ${{env.APP_ID}}
           private_key: ${{ secrets.TOKEN_EXCHANGE_GH_APP_PRIVATE_KEY }}
@@ -100,7 +99,7 @@ jobs:
           VERSION=${{github.head_ref}}
           echo "VERSION=${VERSION##*/}" >> $GITHUB_ENV
       - name: Checkout repository code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           token: ${{ steps.generate_token.outputs.token }}
           fetch-depth: 0
@@ -117,7 +116,7 @@ jobs:
     steps:
       - name: Generate token
         id: generate_token
-        uses: tibdex/github-app-token@b62528385c34dbc9f38e5f4225ac829252d1ea92
+        uses: tibdex/github-app-token@0914d50df753bbc42180d982a6550f195390069f
         with:
           app_id: ${{env.APP_ID}}
           private_key: ${{ secrets.TOKEN_EXCHANGE_GH_APP_PRIVATE_KEY }}
@@ -125,7 +124,7 @@ jobs:
           permissions: >-
             {"contents": "write", "pull_requests": "write"}
       - name: Checkout repository code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
@@ -134,7 +133,7 @@ jobs:
           echo "VERSION=${{github.ref_name}}" >> $GITHUB_ENV
       - uses: actions/setup-go@v4
         with:
-          go-version: "1.20.x"
+          go-version: "1.21.x"
       - name: Create assets
         env:
           RELEASE_MINISIGN_PRIVATE_KEY: ${{secrets.RELEASE_MINISIGN_PRIVATE_KEY}}
@@ -166,7 +165,7 @@ jobs:
     steps:
       - name: Generate token
         id: generate_token
-        uses: tibdex/github-app-token@b62528385c34dbc9f38e5f4225ac829252d1ea92
+        uses: tibdex/github-app-token@0914d50df753bbc42180d982a6550f195390069f
         with:
           app_id: ${{env.APP_ID}}
           private_key: ${{ secrets.TOKEN_EXCHANGE_GH_APP_PRIVATE_KEY }}
@@ -174,7 +173,7 @@ jobs:
           permissions: >-
             {"contents": "write", "pull_requests": "write"}
       - name: Checkout repository code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           fetch-depth: 0
@@ -209,7 +208,7 @@ jobs:
     steps:
       - name: Generate token
         id: generate_token
-        uses: tibdex/github-app-token@b62528385c34dbc9f38e5f4225ac829252d1ea92
+        uses: tibdex/github-app-token@0914d50df753bbc42180d982a6550f195390069f
         with:
           app_id: ${{secrets.BUF_MAVEN_PUBLISH_APP_ID}}
           private_key: ${{ secrets.BUF_MAVEN_PUBLISH_APP_PRIVATE_KEY }}
@@ -236,7 +235,7 @@ jobs:
     steps:
       - name: Generate token
         id: generate_token
-        uses: tibdex/github-app-token@b62528385c34dbc9f38e5f4225ac829252d1ea92
+        uses: tibdex/github-app-token@0914d50df753bbc42180d982a6550f195390069f
         with:
           app_id: ${{secrets.BUF_NPM_PUBLISH_RELEASE_APP_ID}}
           private_key: ${{ secrets.BUF_NPM_PUBLISH_RELEASE_APP_PRIVATE_KEY }}
@@ -263,7 +262,7 @@ jobs:
     steps:
       - name: Generate token
         id: generate_token
-        uses: tibdex/github-app-token@b62528385c34dbc9f38e5f4225ac829252d1ea92
+        uses: tibdex/github-app-token@0914d50df753bbc42180d982a6550f195390069f
         with:
           app_id: ${{secrets.HOMEBREW_RELEASE_APP_ID}}
           private_key: ${{ secrets.HOMEBREW_RELEASE_APP_PRIVATE_KEY }}
@@ -290,7 +289,7 @@ jobs:
     steps:
       - name: Generate token
         id: generate_token
-        uses: tibdex/github-app-token@b62528385c34dbc9f38e5f4225ac829252d1ea92
+        uses: tibdex/github-app-token@0914d50df753bbc42180d982a6550f195390069f
         with:
           app_id: ${{secrets.VIM_BUF_RELEASE_APP_ID}}
           private_key: ${{ secrets.VIM_BUF_RELEASE_APP_PRIVATE_KEY }}
@@ -317,7 +316,7 @@ jobs:
     steps:
       - name: Generate token
         id: generate_token
-        uses: tibdex/github-app-token@b62528385c34dbc9f38e5f4225ac829252d1ea92
+        uses: tibdex/github-app-token@0914d50df753bbc42180d982a6550f195390069f
         with:
           app_id: ${{secrets.BUF_BUILD_RELEASE_APP_ID}}
           private_key: ${{ secrets.BUF_BUILD_RELEASE_APP_PRIVATE_KEY }}
@@ -344,7 +343,7 @@ jobs:
     steps:
       - name: Generate token
         id: generate_token
-        uses: tibdex/github-app-token@b62528385c34dbc9f38e5f4225ac829252d1ea92
+        uses: tibdex/github-app-token@0914d50df753bbc42180d982a6550f195390069f
         with:
           app_id: ${{secrets.BUF_SETUP_ACTION_RELEASE_APP_ID}}
           private_key: ${{ secrets.BUF_SETUP_ACTION_RELEASE_APP_PRIVATE_KEY }}

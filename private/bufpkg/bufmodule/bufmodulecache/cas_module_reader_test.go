@@ -20,8 +20,8 @@ import (
 	"io"
 	"strings"
 	"testing"
-	"time"
 
+	"connectrpc.com/connect"
 	"github.com/bufbuild/buf/private/bufpkg/bufmodule"
 	"github.com/bufbuild/buf/private/bufpkg/bufmodule/bufmoduleref"
 	"github.com/bufbuild/buf/private/gen/proto/connect/buf/alpha/registry/v1alpha1/registryv1alpha1connect"
@@ -31,7 +31,6 @@ import (
 	"github.com/bufbuild/buf/private/pkg/storage"
 	"github.com/bufbuild/buf/private/pkg/storage/storageos"
 	"github.com/bufbuild/buf/private/pkg/verbose"
-	"github.com/bufbuild/connect-go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap/zaptest"
@@ -74,10 +73,8 @@ func TestCASModuleReaderHappyPath(t *testing.T) {
 		"buf.build",
 		"test",
 		"ping",
-		"",
 		"abcd",
 		moduleBlob.Digest().String(),
-		time.Now(),
 	)
 	require.NoError(t, err)
 	_, err = moduleReader.GetModule(context.Background(), pin) // non-cached
@@ -109,10 +106,8 @@ func TestCASModuleReaderNoDigest(t *testing.T) {
 		"buf.build",
 		"test",
 		"ping",
-		"",
 		"abcd",
 		"",
-		time.Now(),
 	)
 	require.NoError(t, err)
 	_, err = moduleReader.GetModule(context.Background(), pin)
@@ -137,10 +132,8 @@ func TestCASModuleReaderDigestMismatch(t *testing.T) {
 		"buf.build",
 		"test",
 		"ping",
-		"",
 		"abcd",
 		"shake256:"+strings.Repeat("00", 64), // Digest which doesn't match module's digest
-		time.Now(),
 	)
 	require.NoError(t, err)
 	_, err = moduleReader.GetModule(context.Background(), pin)

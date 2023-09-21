@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"strings"
 
+	"connectrpc.com/connect"
 	"github.com/bufbuild/buf/private/buf/bufcli"
 	"github.com/bufbuild/buf/private/buf/bufsync"
 	"github.com/bufbuild/buf/private/bufpkg/bufanalysis"
@@ -37,7 +38,6 @@ import (
 	"github.com/bufbuild/buf/private/pkg/storage"
 	"github.com/bufbuild/buf/private/pkg/storage/storagegit"
 	"github.com/bufbuild/buf/private/pkg/stringutil"
-	"github.com/bufbuild/connect-go"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"go.uber.org/zap"
@@ -50,6 +50,7 @@ const (
 	createFlagName           = "create"
 	createVisibilityFlagName = "create-visibility"
 	allBranchesFlagName      = "all-branches"
+	remoteFlagName           = "remote"
 )
 
 // NewCommand returns a new Command.
@@ -61,17 +62,19 @@ func NewCommand(
 	return &appcmd.Command{
 		Use:   name,
 		Short: "Sync a Git repository to a registry",
-		Long: "Sync a Git repository's commits to a registry in topological order. " +
-			"Only commits in the current branch that are pushed to the 'origin' remote are processed. " +
-			"Syncing all branches is possible using '--all-branches' flag." +
-			// TODO rephrase in favor of a default module behavior.
-			"Only modules specified via '--module' are synced.",
+		Long: "Sync commits in a Git repository to a registry in topological order. " +
+			"Local commits in the default and current branch are processed. " +
+			fmt.Sprintf("Syncing only commits pushed to a specific remote is possible using --%s flag. ", remoteFlagName) +
+			fmt.Sprintf("Syncing all branches is possible using --%s flag. ", allBranchesFlagName) +
+			"By default a single module at the root of the repository is assumed, " +
+			fmt.Sprintf("for specific module paths use the --%s flag. ", moduleFlagName) +
+			"This command needs to be run at the root of the Git repository.",
 		Args: cobra.NoArgs,
 		Run: builder.NewRunFunc(
 			func(ctx context.Context, container appflag.Container) error {
 				return run(ctx, container, flags)
 			},
-			// bufcli.NewErrorInterceptor(), // TODO re-enable
+			bufcli.NewErrorInterceptor(),
 		),
 		BindFlags: flags.Bind,
 	}
@@ -83,6 +86,7 @@ type flags struct {
 	Create           bool
 	CreateVisibility string
 	AllBranches      bool
+	Remote           string
 }
 
 func newFlags() *flags {
@@ -99,32 +103,40 @@ func (f *flags) Bind(flagSet *pflag.FlagSet) {
 			stringutil.SliceToString(bufanalysis.AllFormatStrings),
 		),
 	)
-	// TODO: rework in favor of a default module behavior.
 	flagSet.StringSliceVar(
 		&f.Modules,
 		moduleFlagName,
 		nil,
-		"The module(s) to sync to the BSR; this must be in the format <module-path>:<module-name>. "+
-			"The <module-path> is the directory relative to the git repository, and the <module-name> "+
-			"is the module's fully qualified name (FQN) as defined in "+
-			"https://buf.build/docs/bsr/module/manage/#how-modules-are-defined",
+		"The module(s) to sync to the BSR. This value can be just the module directory, or you can "+
+			"also have define a module identity override in the format <module-directory>:<module-name>, "+
+			"where the <module-name> is the module's fully qualified name (FQN) destination as defined in "+
+			"https://buf.build/docs/bsr/module/manage/#how-modules-are-defined. If a module identity "+
+			"override is not passed, the sync destination of the remote module is read from the 'name' "+
+			"field in your 'buf.yaml' at the HEAD commit of each branch. By default this command attempts "+
+			"to sync a single module located at the root directory of the Git repository.",
 	)
 	bufcli.BindCreateVisibility(flagSet, &f.CreateVisibility, createVisibilityFlagName, createFlagName)
 	flagSet.BoolVar(
 		&f.Create,
 		createFlagName,
 		false,
-		fmt.Sprintf("Create the repository if it does not exist. Must set a visibility using --%s", createVisibilityFlagName),
+		fmt.Sprintf("Create the BSR repository if it does not exist. Must set a visibility using --%s", createVisibilityFlagName),
 	)
 	flagSet.BoolVar(
 		&f.AllBranches,
 		allBranchesFlagName,
 		false,
-		"Sync all git repository branches and not only the checked out one. "+
-			"Only commits pushed to the 'origin' remote are processed. "+
-			"Order of sync for git branches is as follows: First, it syncs the default branch read "+
-			"from 'refs/remotes/origin/HEAD', and then all the rest of the branches present in "+
-			"'refs/remotes/origin/*' in a lexicographical order.",
+		"Sync all Git branches and not only the default and checked out one. "+
+			"Order of sync for git branches is as follows: First, it syncs the default branch (read "+
+			"from 'refs/remotes/origin/HEAD'), and then all the rest of the branches in "+
+			"lexicographical order. "+
+			fmt.Sprintf("You can use --%s to only consider remote branches.", remoteFlagName),
+	)
+	flagSet.StringVar(
+		&f.Remote,
+		remoteFlagName,
+		"",
+		"The name of the Git remote to sync. If this flag is passed, only commits pushed to this remote are processed.",
 	)
 }
 
@@ -155,20 +167,18 @@ func run(
 		// No need to pass `flags.Create`, this is not empty iff `flags.Create`
 		flags.CreateVisibility,
 		flags.AllBranches,
+		flags.Remote,
 	)
 }
 
 func sync(
 	ctx context.Context,
 	container appflag.Container,
-	modules []string,
+	modules []string, // moduleDir(:moduleIdentityOverride)
 	createWithVisibility string,
 	allBranches bool,
+	remoteName string,
 ) error {
-	if len(modules) == 0 {
-		container.Logger().Info("no modules to sync")
-		return nil
-	}
 	// Assume that this command is run from the repository root. If not, `OpenRepository` will return
 	// a dir not found error.
 	repo, err := git.OpenRepository(ctx, git.DotGitDir, command.NewRunner())
@@ -185,35 +195,44 @@ func sync(
 		return fmt.Errorf("create connect client %w", err)
 	}
 	syncerOptions := []bufsync.SyncerOption{
+		bufsync.SyncerWithRemote(remoteName),
 		bufsync.SyncerWithResumption(syncPointResolver(clientConfig)),
 		bufsync.SyncerWithGitCommitChecker(syncGitCommitChecker(clientConfig)),
 		bufsync.SyncerWithModuleDefaultBranchGetter(defaultBranchGetter(clientConfig)),
+		bufsync.SyncerWithTagsBackfiller(tagsBackfiller(clientConfig)),
 	}
 	if allBranches {
 		syncerOptions = append(syncerOptions, bufsync.SyncerWithAllBranches())
 	}
+	if len(modules) == 0 {
+		// default behavior, if no modules are passed, a single module at the root of the repo is
+		// assumed.
+		modules = []string{"."}
+	}
+	modulesDirsWithOverrides := make(map[string]struct{})
 	for _, module := range modules {
-		var moduleIdentityOverride bufmoduleref.ModuleIdentity
+		if len(module) == 0 {
+			return errors.New("empty module")
+		}
 		colon := strings.IndexRune(module, ':')
 		if colon == -1 {
-			return appcmd.NewInvalidArgumentErrorf("module %q is missing an identity", module)
+			// no module override was passed, we can pass the module directory alone and continue
+			syncerOptions = append(syncerOptions, bufsync.SyncerWithModule(module, nil))
+			continue
 		}
-		moduleIdentityOverride, err = bufmoduleref.ModuleIdentityForString(module[colon+1:])
+		moduleIdentityOverride, err := bufmoduleref.ModuleIdentityForString(module[colon+1:])
 		if err != nil {
-			return fmt.Errorf("module identity: %w", err)
+			return fmt.Errorf("module %s invalid module identity: %w", module, err)
 		}
-		module = normalpath.Normalize(module[:colon])
-		syncModule, err := bufsync.NewModule(module, moduleIdentityOverride)
-		if err != nil {
-			return fmt.Errorf("prepare module for sync: %w", err)
-		}
-		syncerOptions = append(syncerOptions, bufsync.SyncerWithModule(syncModule))
+		moduleDir := normalpath.Normalize(module[:colon])
+		syncerOptions = append(syncerOptions, bufsync.SyncerWithModule(moduleDir, moduleIdentityOverride))
+		modulesDirsWithOverrides[moduleDir] = struct{}{}
 	}
 	syncer, err := bufsync.NewSyncer(
 		container.Logger(),
 		repo,
 		storageProvider,
-		newErrorHandler(container.Logger()),
+		newErrorHandler(container.Logger(), modulesDirsWithOverrides),
 		syncerOptions...,
 	)
 	if err != nil {
@@ -242,11 +261,11 @@ func sync(
 			)
 		}
 		_, err = container.Stderr().Write([]byte(
-			// from local                     -> to remote
-			// <git-branch>:<git-commit-hash> -> <module-identity>:<bsr-commit-name>
+			// from local                                        -> to remote
+			// <module-directory>:<git-branch>:<git-commit-hash> -> <module-identity>:<bsr-commit-name>
 			fmt.Sprintf(
-				"%s:%s -> %s:%s\n",
-				moduleCommit.Branch(), moduleCommit.Commit().Hash().Hex(),
+				"%s:%s:%s -> %s:%s\n",
+				moduleCommit.Directory(), moduleCommit.Branch(), moduleCommit.Commit().Hash().Hex(),
 				moduleCommit.Identity().IdentityString(), syncPoint.BsrCommitName,
 			)),
 		)
@@ -326,63 +345,116 @@ func defaultBranchGetter(clientConfig *connectclient.Config) bufsync.ModuleDefau
 	}
 }
 
+func tagsBackfiller(clientConfig *connectclient.Config) bufsync.TagsBackfiller {
+	return func(
+		ctx context.Context,
+		module bufmoduleref.ModuleIdentity,
+		alreadySyncedHash git.Hash,
+		author git.Ident,
+		committer git.Ident,
+		tags []string,
+	) (string, error) {
+		service := connectclient.Make(clientConfig, module.Remote(), registryv1alpha1connect.NewSyncServiceClient)
+		res, err := service.AttachGitTags(ctx, connect.NewRequest(&registryv1alpha1.AttachGitTagsRequest{
+			Owner:      module.Owner(),
+			Repository: module.Repository(),
+			Hash:       alreadySyncedHash.Hex(),
+			Author: &registryv1alpha1.GitIdentity{
+				Name:  author.Name(),
+				Email: author.Email(),
+				Time:  timestamppb.New(author.Timestamp()),
+			},
+			Committer: &registryv1alpha1.GitIdentity{
+				Name:  committer.Name(),
+				Email: committer.Email(),
+				Time:  timestamppb.New(committer.Timestamp()),
+			},
+			Tags: tags,
+		}))
+		if err != nil {
+			if connect.CodeOf(err) == connect.CodeNotFound {
+				// Repo is not created
+				return "", bufsync.ErrModuleDoesNotExist
+			}
+			return "", fmt.Errorf("attach git tags to module %q: %w", module.IdentityString(), err)
+		}
+		return res.Msg.GetBsrCommitName(), nil
+	}
+}
+
 type syncErrorHandler struct {
-	logger *zap.Logger
+	logger                          *zap.Logger
+	modulesDirsWithIdentityOverride map[string]struct{}
 }
 
-func newErrorHandler(logger *zap.Logger) bufsync.ErrorHandler {
-	return &syncErrorHandler{logger: logger}
+func newErrorHandler(
+	logger *zap.Logger,
+	modulesDirsWithIdentityOverride map[string]struct{},
+) bufsync.ErrorHandler {
+	return &syncErrorHandler{
+		logger:                          logger,
+		modulesDirsWithIdentityOverride: modulesDirsWithIdentityOverride,
+	}
 }
 
-func (s *syncErrorHandler) BuildFailure(module bufsync.Module, commit git.Commit, err error) error {
-	// We failed to build the module. We can warn on this and carry on.
-	// Note that because of resumption, Syncer will typically only come
-	// across this commit once, we will not log this warning again.
-	s.logger.Warn(
-		"module build failure",
-		zap.Stringer("commit", commit.Hash()),
-		zap.Stringer("module", module),
-		zap.Error(err),
-	)
-	return nil
+func (h *syncErrorHandler) HandleReadModuleError(err *bufsync.ReadModuleError) bufsync.LookbackDecisionCode {
+	switch err.Code() {
+	case bufsync.ReadModuleErrorCodeModuleNotFound,
+		bufsync.ReadModuleErrorCodeInvalidModuleConfig,
+		bufsync.ReadModuleErrorCodeBuildModule:
+		// if the module cannot be found, has an invalid config, or cannot build, we can just skip the
+		// commit.
+		return bufsync.LookbackDecisionCodeSkip
+	case bufsync.ReadModuleErrorCodeUnnamedModule,
+		bufsync.ReadModuleErrorCodeUnexpectedName:
+		// if the module has an unexpected or no name, we should override the module identity only if it
+		// was passed explicitly as an identity override, otherwise skip the commit.
+		if _, hasExplicitOverride := h.modulesDirsWithIdentityOverride[err.ModuleDir()]; hasExplicitOverride {
+			return bufsync.LookbackDecisionCodeOverride
+		}
+		return bufsync.LookbackDecisionCodeSkip
+	}
+	// any unhandled scenarios? just fail the sync
+	return bufsync.LookbackDecisionCodeFail
 }
 
-func (s *syncErrorHandler) InvalidModuleConfig(module bufsync.Module, commit git.Commit, err error) error {
-	// We found a module but the module config is invalid. We can warn on this
-	// and carry on. Note that because of resumption, Syncer will typically only come
-	// across this commit once, we will not log this warning again.
-	s.logger.Warn(
-		"invalid module config",
-		zap.Stringer("commit", commit.Hash()),
-		zap.Stringer("module", module),
-		zap.Error(err),
-	)
-	return nil
-}
-
-func (s *syncErrorHandler) InvalidSyncPoint(
-	module bufsync.Module,
+func (h *syncErrorHandler) InvalidBSRSyncPoint(
+	module bufmoduleref.ModuleIdentity,
 	branch string,
 	syncPoint git.Hash,
+	isGitDefaultBranch bool,
 	err error,
 ) error {
-	// The most likely culprit for an invalid sync point is a rebase, where the last known
-	// commit has been garbage collected. In this case, let's present a better error message.
+	// The most likely culprit for an invalid sync point is a rebase, where the last known commit has
+	// been garbage collected. In this case, let's present a better error message.
 	//
-	// We may want to provide a flag for sync to continue despite this, accumulating the error,
-	// and error at the end, so that other branches can continue to sync, but this branch is
-	// out of date. This is not trivial if the branch that's been rebased is a long-lived
-	// branch (like main) whose artifacts are consumed by other branches, as we may fail to
-	// sync those commits if we continue. So we now we simply error.
+	// This is not trivial scenario if the branch that's been rebased is a long-lived branch (like
+	// main) whose artifacts are consumed by other branches, as we may fail to sync those commits if
+	// we continue.
+	//
+	// For now we simply error if this happens in the default branch, and WARN+skip for the other
+	// branches. We may want to provide a flag in the future for forcing sync to continue despite
+	// this.
 	if errors.Is(err, git.ErrObjectNotFound) {
-		return fmt.Errorf(
-			"last synced commit %s was not found for module %s; did you rebase?",
-			syncPoint,
-			module,
+		if isGitDefaultBranch {
+			return fmt.Errorf(
+				"last synced git commit %q for default branch %q in module %q is not found in the git repo, did you rebase or reset your default branch?",
+				syncPoint.Hex(), branch, module.IdentityString(),
+			)
+		}
+		h.logger.Warn(
+			"last synced git commit not found in the git repo for a non-default branch",
+			zap.String("module", module.IdentityString()),
+			zap.String("branch", branch),
+			zap.String("last synced git commit", syncPoint.Hex()),
 		)
+		return nil
 	}
-	// Otherwise, we still want this to fail sync, let's bubble this up.
-	return err
+	// Other error, let's abort sync.
+	return fmt.Errorf(
+		"invalid sync point %q for branch %q in module %q: %w",
+		syncPoint.Hex(), branch, module.IdentityString(), err,
+	)
 }
 
 func pushOrCreate(
@@ -465,7 +537,7 @@ func push(
 			Email: commit.Author().Email(),
 			Time:  timestamppb.New(commit.Author().Timestamp()),
 		},
-		Commiter: &registryv1alpha1.GitIdentity{
+		Committer: &registryv1alpha1.GitIdentity{
 			Name:  commit.Committer().Name(),
 			Email: commit.Committer().Email(),
 			Time:  timestamppb.New(commit.Committer().Timestamp()),
